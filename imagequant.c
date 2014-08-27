@@ -83,17 +83,14 @@ static void set_binary_mode(FILE *fp)
     setmode(fp == stdout ? 1 : 0, O_BINARY);
 #endif
 }
-static pngquant_error write_image(lua_State *L, png8_image *output_image, png24_image *output_image24, char *buf)
+static pngquant_error write_image(lua_State *L, png8_image *output_image, png24_image *output_image24)
 {
     FILE *outfile;
-       // set_binary_mode(stdout);
-       // outfile = stdout;
 
     off_t eob;
     size_t len;
-    void *buffer = malloc(output_image->maximum_file_size);
-    outfile = fmemopen(buffer, output_image->maximum_file_size, "wb");
-       // FILE *fmemopen(void *buf, size_t size, const char *mode);
+    char *buf;
+    outfile = open_memstream(&buf, &len);
     pngquant_error retval;
     #pragma omp critical (libpng)
     {
@@ -105,7 +102,8 @@ static pngquant_error write_image(lua_State *L, png8_image *output_image, png24_
     }
     fclose(outfile);
     // printf ("buf=%s, len=%zu\n", buf, len);
-   // lua_pushstring(L, buffer);
+   // use lstring to send binary string, second arg is the length of the string
+   lua_pushlstring(L, buf, len);
     return retval;
 }
 
@@ -220,8 +218,7 @@ liq_write_remapped_image_rows(remap, input_image, output_image.row_pointers);
 
             liq_result_destroy(remap);
         output_image.chunks = input_image_rwpng.chunks; input_image_rwpng.chunks = NULL;
-    char *buf;
-        retval = write_image(L,&output_image, NULL, buf);
+        retval = write_image(L,&output_image, NULL);
 
     liq_image_destroy(input_image);
     rwpng_free_image24(&input_image_rwpng);
