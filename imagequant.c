@@ -107,17 +107,19 @@ static pngquant_error write_image(lua_State *L, png8_image *output_image, png24_
     return retval;
 }
 
-static pngquant_error read_image(liq_attr *options, const char *filename, int using_stdin, png24_image *input_image_p, liq_image **liq_image_p)
+static pngquant_error read_image(liq_attr *options, const char *bitmap, int using_stdin, png24_image *input_image_p, liq_image **liq_image_p, size_t *len)
 {
     FILE *infile;
 
-    if (using_stdin) {
-        set_binary_mode(stdin);
-        infile = stdin;
-    } else if ((infile = fopen(filename, "rb")) == NULL) {
-        fprintf(stderr, "  error: cannot open %s for reading\n", filename);
-        return READ_ERROR;
-    }
+    // if (using_stdin) {
+    //     set_binary_mode(stdin);
+    //     infile = stdin;
+    // } else if ((infile = fopen(filename, "rb")) == NULL) {
+    //     fprintf(stderr, "  error: cannot open %s for reading\n", filename);
+    //     return READ_ERROR;
+    // }
+    //
+    infile = fmemopen(bitmap, *len, "rb");
 
     pngquant_error retval;
     #pragma omp critical (libpng)
@@ -197,9 +199,12 @@ static void set_palette(liq_result *result, png8_image *output_image)
     }
 }
 
-static int adit (lua_State *L) {
+static int convert (lua_State *L) {
 liq_attr *attr = liq_attr_create();
-// char *bitmap = luaL_checkstring(L,1);
+size_t len;
+const char *bitmap = lua_tolstring(L,1, &len);
+// printf("len: %zu\n", len);
+// printf("bitmap: %s\n", bitmap);
 int width = 100;
 int height = 100;
 int bitmap_size = 100;
@@ -209,8 +214,8 @@ int bitmap_size = 100;
     liq_image *input_image = NULL;
     png24_image input_image_rwpng = {};
     png8_image output_image = {};
-    char *filename = "/tmp/test.png";
-    read_image(attr, filename, 0, &input_image_rwpng, &input_image);
+    // char *filename = "/tmp/test.png";
+    read_image(attr, bitmap, 0, &input_image_rwpng, &input_image, &len);
 liq_result *remap = liq_quantize_image(attr, input_image);
             retval = prepare_output_image(remap, input_image, &output_image);
 liq_write_remapped_image_rows(remap, input_image, output_image.row_pointers);
@@ -230,8 +235,8 @@ liq_write_remapped_image_rows(remap, input_image, output_image.row_pointers);
 LUALIB_API int luaopen_imagequant( lua_State *L )
 {
     // Expose the functions to the lua environment
-    lua_pushcfunction(L, adit);
-    lua_setglobal(L, "adit");
+    lua_pushcfunction(L, convert);
+    lua_setglobal(L, "convert");
     //
     
     return 1;
