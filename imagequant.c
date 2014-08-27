@@ -208,6 +208,8 @@ const char *bitmap = lua_tolstring(L,1, &len);
 int width = 100;
 int height = 100;
 int bitmap_size = 100;
+int speed = lua_tonumber(L, 2);
+liq_set_speed(attr, speed);
 // liq_image *image = liq_image_create_rgba(attr, bitmap, width, height, 0);
     pngquant_error retval = SUCCESS;
 
@@ -232,11 +234,18 @@ liq_write_remapped_image_rows(remap, input_image, output_image.row_pointers);
   return 1;
 }
 
+static const luaL_Reg funcs[] = {
+{"convert",   convert},
+ { NULL, NULL} // fuck lua
+};
 LUALIB_API int luaopen_imagequant( lua_State *L )
 {
+    lua_newtable(L);
+    luaL_register(L, NULL, funcs);
+
     // Expose the functions to the lua environment
-    lua_pushcfunction(L, convert);
-    lua_setglobal(L, "convert");
+    // lua_pushcfunction(L, convert);
+    // lua_setglobal(L, "convert");
     //
     
     return 1;
