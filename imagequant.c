@@ -83,12 +83,17 @@ static void set_binary_mode(FILE *fp)
     setmode(fp == stdout ? 1 : 0, O_BINARY);
 #endif
 }
-static pngquant_error write_image(png8_image *output_image, png24_image *output_image24, const char *outname)
+static pngquant_error write_image(lua_State *L, png8_image *output_image, png24_image *output_image24, char *buf)
 {
     FILE *outfile;
-        set_binary_mode(stdout);
-        outfile = stdout;
+       // set_binary_mode(stdout);
+       // outfile = stdout;
 
+    off_t eob;
+    size_t len;
+    void *buffer = malloc(output_image->maximum_file_size);
+    outfile = fmemopen(buffer, output_image->maximum_file_size, "wb");
+       // FILE *fmemopen(void *buf, size_t size, const char *mode);
     pngquant_error retval;
     #pragma omp critical (libpng)
     {
@@ -98,11 +103,9 @@ static pngquant_error write_image(png8_image *output_image, png24_image *output_
             retval = rwpng_write_image24(outfile, output_image24);
         }
     }
-
-    if (retval && retval != TOO_LARGE_FILE) {
-        fprintf(stderr, "  error: failed writing image to %s\n", outname);
-    }
-
+    fclose(outfile);
+    // printf ("buf=%s, len=%zu\n", buf, len);
+   // lua_pushstring(L, buffer);
     return retval;
 }
 
@@ -209,7 +212,6 @@ int bitmap_size = 100;
     png24_image input_image_rwpng = {};
     png8_image output_image = {};
     char *filename = "/tmp/test.png";
-    char *outname = "/tmp/test_from_lua.png";
     read_image(attr, filename, 0, &input_image_rwpng, &input_image);
 liq_result *remap = liq_quantize_image(attr, input_image);
             retval = prepare_output_image(remap, input_image, &output_image);
@@ -218,12 +220,13 @@ liq_write_remapped_image_rows(remap, input_image, output_image.row_pointers);
 
             liq_result_destroy(remap);
         output_image.chunks = input_image_rwpng.chunks; input_image_rwpng.chunks = NULL;
-        retval = write_image(&output_image, NULL, outname);
+    char *buf;
+        retval = write_image(L,&output_image, NULL, buf);
 
     liq_image_destroy(input_image);
     rwpng_free_image24(&input_image_rwpng);
     rwpng_free_image8(&output_image);
-  lua_pushstring(L, "done");
+  // lua_pushstring(L,buf);
   return 1;
 }
 
