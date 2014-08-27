@@ -1,2 +1,2 @@
 q = require "imagequant"
-print(q)
+print(adit())

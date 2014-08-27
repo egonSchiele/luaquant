@@ -13,8 +13,8 @@
 #include <errno.h>
 #include <stdint.h>
 #include <lauxlib.h>
+#include "rwpng.h"
 #include "imagequant/libimagequant.h"
-
 // helper macros for lua_State
 #define lstate_fn2tbl(L,k,v) do{ \
     lua_pushstring(L,k); \
@@ -77,241 +77,162 @@ typedef struct {
     } \
 }while(0)
 
-
-// TODO: read image with libpng
-static optimize_error_t read_image( optimize_t *opt,  quant_t *q, 
-                                    const char *srcpath, size_t len )
+static void set_binary_mode(FILE *fp)
 {
-    const char path[PATH_MAX];
-    FILE *fp = NULL;
-    
-    if( !realpath( srcpath, (char*)&path ) ||
-        !( fp = fopen( path, "rb" ) ) ){
-        return OPT_ESYS;
-    }
-    
-    return OPT_OK;
+#if defined(WIN32) || defined(__WIN32__)
+    setmode(fp == stdout ? 1 : 0, O_BINARY);
+#endif
 }
-
-// TODO: write image
-static optimize_error_t optimize( quant_t *q, const char *srcpath, size_t len )
+static pngquant_error write_image(png8_image *output_image, png24_image *output_image24, const char *outname)
 {
-    optimize_t opt;
-    optimize_error_t rc = read_image( &opt, q, srcpath, len );
-    
-    if( rc != OPT_OK ){
-        return rc;
-    }
-    
-    
-    return 0;
-}
+    FILE *outfile;
+        set_binary_mode(stdout);
+        outfile = stdout;
 
-
-static int optimize_lua( lua_State *L )
-{
-    quant_t *q = luaL_checkudata( L, 1, MODULE_MT );
-    size_t len = 0;
-    const char *path = luaL_checklstring( L, 2, &len );
-    const char *errstr = NULL;
-    
-    switch( optimize( q, path, len ) ){
-        case OPT_ESYS:
-            errstr = strerror( errno );
-        break;
-        
-        default:
-            lua_pushboolean( L, 1 );
-            return 1;
-    }
-    
-    lua_pushboolean( L, 0 );
-    lua_pushstring( L, errstr );
-    
-    return 2;
-}
-
-
-static int maxcolor_lua( lua_State *L )
-{
-    int argc = lua_gettop( L );
-    quant_t *q = luaL_checkudata( L, 1, MODULE_MT );
-    int colors;
-    
-    if( argc > 1 ){
-        colors = lstate_checkrange( L, luaL_checkint, 2, 2, 256 );
-        LQUANT_ATTR_SET( L, q, liq_set_max_colors, colors );
-    }
-    else {
-        // colors = liq_get_max_colors( q->attr );
-    }
-    
-    lua_pushinteger( L, colors );
-    
-    return 1;
-}
-
-static int quality_lua( lua_State *L )
-{
-    int argc = lua_gettop( L );
-    quant_t *q = luaL_checkudata( L, 1, MODULE_MT );
-    int min, max;
-    
-    if( argc > 1 )
+    pngquant_error retval;
+    #pragma omp critical (libpng)
     {
-        min = lstate_checkrange( L, luaL_checkint, 2, 0, 100 );
-        max = lstate_checkrange( L, luaL_checkint, 3, 0, 100 );
-        if( min > max ){
-            return luaL_error( L, "min must be less than %d", max );
+        if (output_image) {
+            retval = rwpng_write_image8(outfile, output_image);
+        } else {
+            retval = rwpng_write_image24(outfile, output_image24);
         }
-        LQUANT_ATTR_SET( L, q, liq_set_quality, min, max );
     }
-    else {
-        // min = liq_get_min_quality( q->attr );
-        // max = liq_get_max_quality( q->attr );
+
+    if (retval && retval != TOO_LARGE_FILE) {
+        fprintf(stderr, "  error: failed writing image to %s\n", outname);
     }
-    
-    lua_pushinteger( L, min );
-    lua_pushinteger( L, max );
-    
-    return 2;
+
+    return retval;
 }
 
-
-static int speed_lua( lua_State *L )
+static pngquant_error read_image(liq_attr *options, const char *filename, int using_stdin, png24_image *input_image_p, liq_image **liq_image_p)
 {
-    int argc = lua_gettop( L );
-    quant_t *q = luaL_checkudata( L, 1, MODULE_MT );
-    int val;
-    
-    if( argc > 1 ){
-        val = lstate_checkrange( L, luaL_checkint, 2, 1, 10 );
-        LQUANT_ATTR_SET( L, q, liq_set_speed, val );
+    FILE *infile;
+
+    if (using_stdin) {
+        set_binary_mode(stdin);
+        infile = stdin;
+    } else if ((infile = fopen(filename, "rb")) == NULL) {
+        fprintf(stderr, "  error: cannot open %s for reading\n", filename);
+        return READ_ERROR;
     }
-    else {
-        // val = liq_get_speed( q->attr );
+
+    pngquant_error retval;
+    #pragma omp critical (libpng)
+    {
+        retval = rwpng_read_image24(infile, input_image_p, 0);
     }
-    
-    lua_pushinteger( L, val );
-    
-    return 1;
+
+    if (!using_stdin) {
+        fclose(infile);
+    }
+
+    if (retval) {
+        fprintf(stderr, "  error: rwpng_read_image() error %d\n", retval);
+        return retval;
+    }
+
+    *liq_image_p = liq_image_create_rgba_rows(options, (void**)input_image_p->row_pointers, input_image_p->width, input_image_p->height, input_image_p->gamma);
+
+    if (!*liq_image_p) {
+        return OUT_OF_MEMORY_ERROR;
+    }
+
+    return SUCCESS;
 }
 
-static int min_opacity_lua( lua_State *L )
+static pngquant_error prepare_output_image(liq_result *result, liq_image *input_image, png8_image *output_image)
 {
-    int argc = lua_gettop( L );
-    quant_t *q = luaL_checkudata( L, 1, MODULE_MT );
-    int val;
-    
-    if( argc > 1 ){
-        val = lstate_checkrange( L, luaL_checkint, 2, 0, 255 );
-        LQUANT_ATTR_SET( L, q, liq_set_min_opacity, val );
+    output_image->width = liq_image_get_width(input_image);
+    output_image->height = liq_image_get_height(input_image);
+    output_image->gamma = liq_get_output_gamma(result);
+
+    /*
+    ** Step 3.7 [GRR]: allocate memory for the entire indexed image
+    */
+
+    output_image->indexed_data = malloc(output_image->height * output_image->width);
+    output_image->row_pointers = malloc(output_image->height * sizeof(output_image->row_pointers[0]));
+
+    if (!output_image->indexed_data || !output_image->row_pointers) {
+        return OUT_OF_MEMORY_ERROR;
     }
-    else {
-       //  val = liq_get_min_opacity( q->attr );
+
+    unsigned int row = 0;
+    for(row = 0;  row < output_image->height;  ++row) {
+        output_image->row_pointers[row] = output_image->indexed_data + row*output_image->width;
     }
-    
-    lua_pushinteger( L, val );
-    
-    return 1;
+
+    const liq_palette *palette = liq_get_palette(result);
+    // tRNS, etc.
+    output_image->num_palette = palette->count;
+    output_image->num_trans = 0;
+    unsigned int i=0;
+    for(i=0; i < palette->count; i++) {
+        if (palette->entries[i].a < 255) {
+            output_image->num_trans = i+1;
+        }
+    }
+
+    return SUCCESS;
 }
 
-
-static int min_posterization_lua( lua_State *L )
+static void set_palette(liq_result *result, png8_image *output_image)
 {
-    int argc = lua_gettop( L );
-    quant_t *q = luaL_checkudata( L, 1, MODULE_MT );
-    int val;
-    
-    if( argc > 1 ){
-        val = lstate_checkrange( L, luaL_checkint, 2, 0, 4 );
-        // LQUANT_ATTR_SET( L, q, liq_set_min_posterization, val );
+    const liq_palette *palette = liq_get_palette(result);
+
+    // tRNS, etc.
+    output_image->num_palette = palette->count;
+    output_image->num_trans = 0;
+    unsigned int i=0;
+    for(i=0; i < palette->count; i++) {
+        liq_color px = palette->entries[i];
+        if (px.a < 255) {
+            output_image->num_trans = i+1;
+        }
+        output_image->palette[i] = (png_color){.red=px.r, .green=px.g, .blue=px.b};
+        output_image->trans[i] = px.a;
     }
-    else {
-        // val = liq_get_min_posterization( q->attr );
-    }
-    
-    lua_pushinteger( L, val );
-    
-    return 1;
 }
 
+static int adit (lua_State *L) {
+liq_attr *attr = liq_attr_create();
+// char *bitmap = luaL_checkstring(L,1);
+int width = 100;
+int height = 100;
+int bitmap_size = 100;
+// liq_image *image = liq_image_create_rgba(attr, bitmap, width, height, 0);
+    pngquant_error retval = SUCCESS;
 
-static int gc_lua( lua_State *L )
-{
-    quant_t *q = (quant_t*)lua_touserdata( L, 1 );
-    
-    if( q->attr ){
-        liq_attr_destroy( q->attr );
-    }
-    
-    return 0;
+    liq_image *input_image = NULL;
+    png24_image input_image_rwpng = {};
+    png8_image output_image = {};
+    char *filename = "/tmp/test.png";
+    char *outname = "/tmp/test_from_lua.png";
+    read_image(attr, filename, 0, &input_image_rwpng, &input_image);
+liq_result *remap = liq_quantize_image(attr, input_image);
+            retval = prepare_output_image(remap, input_image, &output_image);
+liq_write_remapped_image_rows(remap, input_image, output_image.row_pointers);
+                set_palette(remap, &output_image);
+
+            liq_result_destroy(remap);
+        output_image.chunks = input_image_rwpng.chunks; input_image_rwpng.chunks = NULL;
+        retval = write_image(&output_image, NULL, outname);
+
+    liq_image_destroy(input_image);
+    rwpng_free_image24(&input_image_rwpng);
+    rwpng_free_image8(&output_image);
+  lua_pushstring(L, "done");
+  return 1;
 }
-
-static int tostring_lua( lua_State *L )
-{
-    lua_pushfstring( L, MODULE_MT ": %p", lua_touserdata( L, 1 ) );
-    return 1;
-}
-
-
-static int alloc_lua( lua_State *L )
-{
-    quant_t *q = lua_newuserdata( L, sizeof( quant_t ) );
-    
-    if( q && ( q->attr = liq_attr_create() ) ){
-        luaL_getmetatable( L, MODULE_MT );
-        lua_setmetatable( L, -2 );
-        return 1;
-    }
-    
-    // got error
-    lua_pushnil( L );
-    lua_pushstring( L, strerror( errno ) );
-    
-    return 2;
-}
-
 
 LUALIB_API int luaopen_imagequant( lua_State *L )
 {
-    struct luaL_Reg mmethod[] = {
-        { "__gc", gc_lua },
-        { "__tostring", tostring_lua },
-        { NULL, NULL }
-    };
-    struct luaL_Reg method[] = {
-        { "maxColor", maxcolor_lua },
-        { "quality", quality_lua },
-        { "speed", speed_lua },
-        { "minOpacity", min_opacity_lua },
-        { "minPosterization", min_posterization_lua },
-        { "optimize", optimize_lua },
-        { NULL, NULL }
-    };
-    int i;
-    
-    // create table __metatable
-    luaL_newmetatable( L, MODULE_MT );
-    // metamethods
-    i = 0;
-    while( mmethod[i].name ){
-        lstate_fn2tbl( L, mmethod[i].name, mmethod[i].func );
-        i++;
-    }
-    // methods
-    lua_pushstring( L, "__index" );
-    lua_newtable( L );
-    i = 0;
-    while( method[i].name ){
-        lstate_fn2tbl( L, method[i].name, method[i].func );
-        i++;
-    }
-    lua_rawset( L, -3 );
-    lua_pop( L, 1 );
-    
-    // add methods
-    lua_pushcfunction( L, alloc_lua );
+    // Expose the functions to the lua environment
+    lua_pushcfunction(L, adit);
+    lua_setglobal(L, "adit");
+    //
     
     return 1;
 }
