@@ -49,6 +49,8 @@ static pngquant_error write_image(lua_State *L, png8_image *output_image)
   // (i.e. this is the only argument that gets returned from the `convert` function)
   // use lstring to send binary string, second arg is the length of the string (set by open_memstream)
   lua_pushlstring(L, buf, len);
+  
+  free(buf);
   return retval;
 }
 
