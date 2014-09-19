@@ -9,7 +9,8 @@
 #include "rwpng.h"
 #include "imagequant/libimagequant.h"
 
-static pngquant_error check_error(lua_State *L, pngquant_error err, const char *context) {
+/*
+pngquant_error check_error(lua_State *L, pngquant_error err, const char *context) {
   switch(err) {
     case SUCCESS: break;
     case MISSING_ARGUMENT: luaL_error(L, "error during %s: missing argument", context);
@@ -28,33 +29,26 @@ static pngquant_error check_error(lua_State *L, pngquant_error err, const char *
   }
   return err;
 }
+*/
 
-static pngquant_error write_image(lua_State *L, png8_image *output_image)
+pngquant_error write_image(char *buf, size_t len, png8_image *output_image)
 {
   FILE *outfile;
 
   off_t eob;
-  size_t len;
-  char *buf;
 
   // we get the data as a string, but this code was originally written to work with a file handle.
   // open_memstream is a convenient function that will make a string act like a file handle.
   outfile = open_memstream(&buf, &len);
   pngquant_error retval;
   retval = rwpng_write_image8(outfile, output_image);
-  check_error(L, retval, "rwpng_write_image8");
+  // check_error(L, retval, "rwpng_write_image8");
   fclose(outfile);
 
-  // push the resulting string onto the lua stack
-  // (i.e. this is the only argument that gets returned from the `convert` function)
-  // use lstring to send binary string, second arg is the length of the string (set by open_memstream)
-  lua_pushlstring(L, buf, len);
-  
-  free(buf);
   return retval;
 }
 
-static pngquant_error read_image(lua_State *L, liq_attr *options, const char *bitmap, png24_image *input_image_p, liq_image **liq_image_p, size_t *len)
+pngquant_error read_image(liq_attr *options, const char *bitmap, png24_image *input_image_p, liq_image **liq_image_p, size_t *len)
 {
   FILE *infile;
   infile = fmemopen(bitmap, *len, "rb");
@@ -63,9 +57,9 @@ static pngquant_error read_image(lua_State *L, liq_attr *options, const char *bi
   retval = rwpng_read_image24(infile, input_image_p, 0);
   fclose(infile);
 
-  if (check_error(L, retval, "rwpng_read_image24")) {
-    return retval;
-  }
+  /* if (check_error(L, retval, "rwpng_read_image24")) { */
+  /*   return retval; */
+  /* } */
 
   *liq_image_p = liq_image_create_rgba_rows(options, (void**)input_image_p->row_pointers, input_image_p->width, input_image_p->height, input_image_p->gamma);
 
@@ -76,7 +70,7 @@ static pngquant_error read_image(lua_State *L, liq_attr *options, const char *bi
   return SUCCESS;
 }
 
-static pngquant_error prepare_output_image(liq_result *result, liq_image *input_image, png8_image *output_image)
+pngquant_error prepare_output_image(liq_result *result, liq_image *input_image, png8_image *output_image)
 {
   output_image->width  = liq_image_get_width(input_image);
   output_image->height = liq_image_get_height(input_image);
@@ -112,7 +106,7 @@ static pngquant_error prepare_output_image(liq_result *result, liq_image *input_
   return SUCCESS;
 }
 
-static void set_palette(liq_result *result, png8_image *output_image)
+void set_palette(liq_result *result, png8_image *output_image)
 {
   const liq_palette *palette = liq_get_palette(result);
 
@@ -141,62 +135,30 @@ static void set_palette(liq_result *result, png8_image *output_image)
 // speed is a value from 1 to 10. 1 = higher compression but slower.
 // If you are unsure what to set, set 10. File size is a little bigger,
 // but it runs a lot faster.
-static int convert (lua_State *L) {
-
-
-  if (lua_gettop(L) != 2) {
-    luaL_error(L, "string convert(string original_image, int speed)");
-  }
-
+int convert (char* buf, size_t len, char* bitmap, int speed) {
   liq_attr *attr = liq_attr_create();
 
-  // this is needed because it is binary data, so it could contain \0's that don't mean
-  // the end of the string. So lua_tolstring will store the real length of the data in `len`.
-  size_t len;
-  const char *bitmap = lua_tolstring(L,1, &len);
-  int speed = lua_tonumber(L, 2);
   liq_set_speed(attr, speed);
   pngquant_error retval = SUCCESS;
 
   liq_image *input_image = NULL;
   png24_image input_image_rwpng = {};
   png8_image output_image = {};
-  read_image(L, attr, bitmap, &input_image_rwpng, &input_image, &len);
+  read_image(attr, bitmap, &input_image_rwpng, &input_image, &len);
   liq_result *remap = liq_quantize_image(attr, input_image);
   retval = prepare_output_image(remap, input_image, &output_image);
-  check_error(L, retval, "prepare_output_image");
+  // check_error(L, retval, "prepare_output_image");
   liq_write_remapped_image_rows(remap, input_image, output_image.row_pointers);
   set_palette(remap, &output_image);
 
   output_image.chunks = input_image_rwpng.chunks; input_image_rwpng.chunks = NULL;
-  retval = write_image(L,&output_image);
+  
+  retval = write_image(buf, len,&output_image);
 
   liq_attr_destroy(attr);
   liq_image_destroy(input_image);
   liq_result_destroy(remap);
   rwpng_free_image24(&input_image_rwpng);
   rwpng_free_image8(&output_image);
-  // return 1 == this function returns one argument to lua.
-  // Argument is returned by the `write_image` function.
   return 1;
 }
-
-// functions to expose to lua
-static const luaL_Reg funcs[] = {
-  {"convert",   convert},
-  { NULL, NULL} // fuck lua
-};
-
-// This function gets called to set up the lib in lua.
-// `lua_newtable` makes a new table in lua with the name given
-// by the user. So for example you can use the library like this:
-//
-// q = require "imagequant"
-// q.convert(...)
-LUALIB_API int luaopen_imagequant( lua_State *L )
-{
-  lua_newtable(L);
-  luaL_register(L, NULL, funcs);
-  return 1;
-}
-
