@@ -1,5 +1,6 @@
 // Most of this code was copied from the pngquant source.
 
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,7 @@
 #include <lauxlib.h>
 #include "rwpng.h"
 #include "imagequant/libimagequant.h"
+#include "luaquant.h"
 
 /*
 pngquant_error check_error(lua_State *L, pngquant_error err, const char *context) {
@@ -31,21 +33,23 @@ pngquant_error check_error(lua_State *L, pngquant_error err, const char *context
 }
 */
 
-pngquant_error write_image(char *buf, size_t len, png8_image *output_image)
+luaquant_result* write_image(png8_image *output_image)
 {
   FILE *outfile;
+
+  luaquant_result *result = (luaquant_result *) malloc(sizeof(luaquant_result));
 
   off_t eob;
 
   // we get the data as a string, but this code was originally written to work with a file handle.
   // open_memstream is a convenient function that will make a string act like a file handle.
-  outfile = open_memstream(&buf, &len);
+  outfile = open_memstream(&result->data, &result->size);
   pngquant_error retval;
   retval = rwpng_write_image8(outfile, output_image);
   // check_error(L, retval, "rwpng_write_image8");
   fclose(outfile);
 
-  return retval;
+  return result;
 }
 
 pngquant_error read_image(liq_attr *options, const char *bitmap, png24_image *input_image_p, liq_image **liq_image_p, size_t *len)
@@ -135,15 +139,14 @@ void set_palette(liq_result *result, png8_image *output_image)
 // speed is a value from 1 to 10. 1 = higher compression but slower.
 // If you are unsure what to set, set 10. File size is a little bigger,
 // but it runs a lot faster.
-int convert (char* buf, size_t len, char* bitmap, int speed) {
+luaquant_result* convert(char* bitmap, int len_, int speed) {
   liq_attr *attr = liq_attr_create();
-
   liq_set_speed(attr, speed);
   pngquant_error retval = SUCCESS;
-
   liq_image *input_image = NULL;
   png24_image input_image_rwpng = {};
   png8_image output_image = {};
+  size_t len = len_;
   read_image(attr, bitmap, &input_image_rwpng, &input_image, &len);
   liq_result *remap = liq_quantize_image(attr, input_image);
   retval = prepare_output_image(remap, input_image, &output_image);
@@ -153,12 +156,12 @@ int convert (char* buf, size_t len, char* bitmap, int speed) {
 
   output_image.chunks = input_image_rwpng.chunks; input_image_rwpng.chunks = NULL;
   
-  retval = write_image(buf, len,&output_image);
+  luaquant_result *result = write_image(&output_image);
 
   liq_attr_destroy(attr);
   liq_image_destroy(input_image);
   liq_result_destroy(remap);
   rwpng_free_image24(&input_image_rwpng);
   rwpng_free_image8(&output_image);
-  return 1;
+  return result;
 }
